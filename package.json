@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test core.test.ts",
-    "typecheck:pi": "tsc --noEmit --module esnext --moduleResolution bundler --target es2024 --skipLibCheck pi.ts core.ts"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit --module esnext --moduleResolution bundler --target es2024 --skipLibCheck core.ts pi.ts hooks.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.0.0"

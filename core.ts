@@ -104,6 +104,14 @@ export function renderMemoryBlock(memories: readonly RecalledMemory[]): string |
 	].join("\n");
 }
 
+export function formatInteraction(user: string, assistant: string): string | undefined {
+	const userText = user.trim();
+	const assistantText = assistant.trim();
+	if (!userText || !assistantText) return undefined;
+
+	return `User:\n${truncateText(userText, 8_000)}\n\nAssistant:\n${truncateText(assistantText, 8_000)}`;
+}
+
 export function extractInteraction(messages: readonly unknown[], lastAssistantMessage: unknown): string | undefined {
 	let latestUserText = "";
 	for (const message of messages) {
@@ -117,8 +125,5 @@ export function extractInteraction(messages: readonly unknown[], lastAssistantMe
 	const assistant = record(lastAssistantMessage);
 	if (assistant?.role !== "assistant") return undefined;
 
-	const finalAssistantText = assistantText(assistant.content).trim();
-	if (!latestUserText || !finalAssistantText) return undefined;
-
-	return `User:\n${truncateText(latestUserText, 8_000)}\n\nAssistant:\n${truncateText(finalAssistantText, 8_000)}`;
+	return formatInteraction(latestUserText, assistantText(assistant.content));
 }

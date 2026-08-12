@@ -1,13 +1,13 @@
-# Mnemosyne Memory for OMP and Pi
+# Mnemosyne Memory for Coding Agents
 
-Automatic recall and retention for [Oh My Pi](https://github.com/can1357/oh-my-pi) and [Pi](https://pi.dev) through a local Mnemosyne MCP server.
+Automatic recall and retention for [Oh My Pi](https://github.com/can1357/oh-my-pi), [Pi](https://pi.dev), Codex, Claude Code, and AGY through a local Mnemosyne MCP server.
 
 ## Requirements
 
-- OMP 17.2.12 or later, or Pi 0.84.1 or later.
+- OMP 17.2.12 or later, Pi 0.84.1 or later, Codex CLI, Claude Code, or AGY.
 - Mnemosyne 3.15.1 or later on `PATH`.
 - Node.js 22.19 or later for Pi.
-- Bun for tests.
+- Bun for command hooks and tests.
 
 ## Install
 
@@ -43,7 +43,7 @@ Install the package locally, then register it with Pi:
 
 ```sh
 cd /path/to/mnemosyne-memory
-npm install --omit=dev
+bun install --production
 ```
 
 ```sh
@@ -58,15 +58,95 @@ pi -e /path/to/mnemosyne-memory/pi.ts
 
 Pi starts its own `mnemosyne mcp` stdio client for automatic recall and retention. Configure the same server through `pi-mcp-adapter` only if you also want Pi's explicit `mcp__mnemosyne_*` tools. Restart Pi after changing its settings.
 
+### Codex
+
+Merge the following into `~/.codex/hooks.json` or `.codex/hooks.json`, replacing `/path/to/mnemosyne-memory` with this package's absolute path:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "bun /path/to/mnemosyne-memory/hooks.ts codex",
+        "timeout": 10,
+        "additionalContextLimit": 16000
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "bun /path/to/mnemosyne-memory/hooks.ts codex",
+        "timeout": 10
+      }]
+    }]
+  }
+}
+```
+
+Codex recalls on `UserPromptSubmit` and retains the completed response on `Stop`.
+
+### Claude Code
+
+Merge the following into `~/.claude/settings.json` or `.claude/settings.json`, replacing `/path/to/mnemosyne-memory` with this package's absolute path:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "bun /path/to/mnemosyne-memory/hooks.ts claude",
+        "timeout": 10
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "bun /path/to/mnemosyne-memory/hooks.ts claude",
+        "timeout": 10
+      }]
+    }]
+  }
+}
+```
+
+Claude Code recalls on `UserPromptSubmit` and retains the completed response from its `Stop` event's `last_assistant_message` field.
+
+### AGY
+
+AGY support is experimental because its hooks do not expose the current user prompt or final assistant response. The hook reads AGY's undocumented JSONL transcript and may need updating for future AGY releases.
+
+Merge the following into `.agents/hooks.json` or `~/.gemini/config/hooks.json`, replacing `/path/to/mnemosyne-memory` with this package's absolute path:
+
+```json
+{
+  "mnemosyne-memory": {
+    "PreInvocation": [{
+      "type": "command",
+      "command": "bun /path/to/mnemosyne-memory/hooks.ts agy PreInvocation",
+      "timeout": 10
+    }],
+    "Stop": [{
+      "type": "command",
+      "command": "bun /path/to/mnemosyne-memory/hooks.ts agy Stop",
+      "timeout": 10
+    }]
+  }
+}
+```
+
+AGY recalls before every model invocation and retains only a `model_stop` execution that reports `fullyIdle: true`.
+
 ## Behavior
 
 - Before each non-empty prompt, recalls up to eight global memories using the first 4,000 prompt characters.
 - Limits each injected memory to 2,000 characters and XML-escapes it before adding it as untrusted background context.
 - After each settled main-session turn, stores the latest real user text and final assistant text, limited to 8,000 characters each.
-- Stores records globally as `omp-session` or `pi-session`, with host session and turn IDs as metadata.
-- Fails open. A missing server, transport error, malformed result, or five-second timeout leaves the host turn usable and logs one warning until the operation succeeds.
+- Stores records globally as `<host>-session`, with host session and turn IDs as metadata.
+- Fails open. A missing server, transport error, malformed result, or five-second timeout leaves the host turn usable.
 
-Global retention makes stored interactions available to every OMP and Pi project sharing the Mnemosyne data directory. Do not submit content you do not want persisted.
+Command hooks retain their active prompt temporarily under `$MNEMOSYNE_MEMORY_STATE_DIR`, or `~/.local/state/mnemosyne-memory` by default. Global retention makes stored interactions available to every configured agent and project sharing the Mnemosyne data directory. Do not submit content you do not want persisted.
 
 `memory.backend: off` intentionally disables OMP-native `/memory`, `ctx.memory`, `memory://`, `recall`, and `retain`. The OMP extension adds no duplicate MCP tools or `/memory` command.
 
@@ -75,8 +155,8 @@ Use OMP's existing `mcp__mnemosyne_remember`, `mcp__mnemosyne_recall`, `mcp__mne
 ## Test
 
 ```sh
-bun test core.test.ts
-npm run typecheck:pi
+bun test
+bun run typecheck
 ```
 
 ## Troubleshooting
@@ -88,7 +168,7 @@ mnemosyne doctor --format json
 
 ## Rollback
 
-Remove the extension entry, restore the prior `memory.backend` value, and start a new OMP session.
+Remove the OMP or Pi extension entry, or the host hook entries, then restart the host. Delete `$MNEMOSYNE_MEMORY_STATE_DIR` if you also want to remove pending local prompts.
 
 ## License
 
