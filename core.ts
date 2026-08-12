@@ -1,3 +1,5 @@
+import { isRetainablePrompt, recallLimit } from "./config";
+
 export interface McpTextResult {
 	isError?: boolean;
 	content: readonly { type: string; text?: string }[];
@@ -87,11 +89,11 @@ export function parseRememberResponse(result: McpTextResult): string | undefined
 	return payload.memory_id;
 }
 
-export function renderMemoryBlock(memories: readonly RecalledMemory[]): string | undefined {
+export function renderMemoryBlock(memories: readonly RecalledMemory[], limit = recallLimit()): string | undefined {
 	const contents = memories
 		.map(memory => memory.content.trim())
 		.filter(Boolean)
-		.slice(0, 8)
+		.slice(0, limit)
 		.map(content => `- ${xmlEscape(truncateText(content, 2_000))}`);
 	if (contents.length === 0) return undefined;
 
@@ -104,10 +106,11 @@ export function renderMemoryBlock(memories: readonly RecalledMemory[]): string |
 	].join("\n");
 }
 
-export function formatInteraction(user: string, assistant: string): string | undefined {
+export function formatInteraction(user: string, assistant: string, minUserLength?: number): string | undefined {
 	const userText = user.trim();
 	const assistantText = assistant.trim();
 	if (!userText || !assistantText) return undefined;
+	if (!isRetainablePrompt(userText, minUserLength)) return undefined;
 
 	return `User:\n${truncateText(userText, 8_000)}\n\nAssistant:\n${truncateText(assistantText, 8_000)}`;
 }

@@ -3,7 +3,8 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { isRetainablePrompt, recallLimit, retainEnabled, retentionPolicy, serverEnvironment } from "./config";
 import { formatInteraction, parseRecallResponse, parseRememberResponse, renderMemoryBlock, type McpTextResult } from "./core";
 
 const timeoutMs = 5_000;
@@ -150,7 +151,12 @@ async function callMnemosyne(
 ): Promise<McpTextResult> {
 	const signal = AbortSignal.timeout(timeoutMs);
 	const client = new Client({ name: "mnemosyne-memory", version: "1.0.0" });
-	const transport = new StdioClientTransport({ command: "mnemosyne", args: ["mcp"], stderr: "ignore" });
+	const transport = new StdioClientTransport({
+		command: "mnemosyne",
+		args: ["mcp"],
+		stderr: "ignore",
+		env: { ...getDefaultEnvironment(), ...serverEnvironment() },
+	});
 
 	try {
 		await withAbort(client.connect(transport), signal);
@@ -160,20 +166,18 @@ async function callMnemosyne(
 	}
 }
 
-function createOperations(): HookOperations {
+export function createOperations(host: Host, cwd?: string, call = callMnemosyne): HookOperations {
 	return {
 		async recall(query) {
-			const result = await callMnemosyne("mnemosyne_recall", { query, limit: 8 });
+			const result = await call("mnemosyne_recall", { query, limit: recallLimit() });
 			return renderMemoryBlock(parseRecallResponse(result));
 		},
 		async remember(content, metadata) {
-			const result = await callMnemosyne("mnemosyne_remember", {
+			if (!retainEnabled()) return;
+			const result = await call("mnemosyne_remember", {
 				content,
-				importance: 0.5,
-				source: `${metadata.host}-session`,
-				scope: "global",
-				veracity: "unknown",
 				metadata,
+				...retentionPolicy(host, cwd),
 			});
 			parseRememberResponse(result);
 		},
@@ -207,6 +211,7 @@ async function handleRecall(host: Host, input: HookInput, operations: HookOperat
 	const ids = hostIds(host, input);
 	const prompt = host === "agy" ? (await readAgyTranscript(input)).user : text(input.prompt);
 	if (!prompt || !ids.sessionId || !ids.turnId) return recallOutput(host, undefined);
+	if (!isRetainablePrompt(prompt)) return recallOutput(host, undefined);
 
 	try {
 		await savePending(host, ids.sessionId, ids.turnId, { prompt }, directory);
@@ -272,7 +277,8 @@ async function main(): Promise<void> {
 		const input = record(JSON.parse(await readStdin()));
 		if (!input) throw new Error("Hook input must be a JSON object");
 		if (event) input.hook_event_name = event;
-		process.stdout.write(`${JSON.stringify(await handleHook(host, input, createOperations()))}\n`);
+		const operations = createOperations(host, text(input.cwd));
+		process.stdout.write(`${JSON.stringify(await handleHook(host, input, operations))}\n`);
 	} catch (error) {
 		console.error(`Mnemosyne hook: ${error instanceof Error ? error.message : "invalid input"}`);
 		process.stdout.write(`${JSON.stringify(stopOutput(host))}\n`);

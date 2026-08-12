@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { MCPManager, callTool } from "@oh-my-pi/pi-coding-agent/mcp";
+import { isRetainablePrompt, recallLimit, retainEnabled, retentionPolicy } from "./config";
 import {
 	extractInteraction,
 	parseRecallResponse,
@@ -61,10 +62,10 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async event => {
 		const query = event.prompt.trim().slice(0, 4_000);
-		if (!query) return;
+		if (!query || !isRetainablePrompt(query)) return;
 
 		try {
-			const result = await callMnemosyne("mnemosyne_recall", { query, limit: 8 });
+			const result = await callMnemosyne("mnemosyne_recall", { query, limit: recallLimit() });
 			const memoryBlock = renderMemoryBlock(parseRecallResponse(result));
 			reportedFailures.delete("recall");
 			return memoryBlock ? { systemPrompt: [...event.systemPrompt, memoryBlock] } : undefined;
@@ -73,8 +74,8 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("session_stop", async event => {
-		if (event.stop_hook_active) return;
+	pi.on("session_stop", async (event, ctx) => {
+		if (event.stop_hook_active || !retainEnabled()) return;
 
 		const content = extractInteraction(event.messages, event.last_assistant_message);
 		if (!content) return;
@@ -87,14 +88,11 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 				"mnemosyne_remember",
 				{
 					content,
-					importance: 0.5,
-					source: "omp-session",
-					scope: "global",
-					veracity: "unknown",
 					metadata: {
 						omp_session_id: event.session_id,
 						omp_turn_id: event.turn_id,
 					},
+					...retentionPolicy("omp", ctx.cwd),
 				},
 				event.signal,
 			);

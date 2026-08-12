@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { isRetainablePrompt, recallLimit, retainEnabled, retentionPolicy, serverEnvironment } from "./config";
 import {
 	extractInteraction,
 	parseRecallResponse,
@@ -67,6 +68,7 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 			command: serverCommand,
 			args: serverArgs,
 			stderr: "ignore",
+			env: { ...getDefaultEnvironment(), ...serverEnvironment() },
 		});
 
 		try {
@@ -79,10 +81,10 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const query = event.prompt.trim().slice(0, 4_000);
-		if (!query) return;
+		if (!query || !isRetainablePrompt(query)) return;
 
 		try {
-			const result = await callMnemosyne("mnemosyne_recall", { query, limit: 8 }, ctx.signal);
+			const result = await callMnemosyne("mnemosyne_recall", { query, limit: recallLimit() }, ctx.signal);
 			const memoryBlock = renderMemoryBlock(parseRecallResponse(result));
 			reportedFailures.delete("recall");
 			return memoryBlock ? { systemPrompt: `${event.systemPrompt}\n\n${memoryBlock}` } : undefined;
@@ -92,6 +94,8 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
+		if (!retainEnabled()) return;
+
 		const messages = ctx.sessionManager.buildContextEntries().flatMap(entry =>
 			entry.type === "message" ? [entry.message] : [],
 		);
@@ -110,14 +114,11 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 				"mnemosyne_remember",
 				{
 					content,
-					importance: 0.5,
-					source: "pi-session",
-					scope: "global",
-					veracity: "unknown",
 					metadata: {
 						pi_session_id: ctx.sessionManager.getSessionId(),
 						pi_turn_id: turnId,
 					},
+					...retentionPolicy("pi", ctx.cwd),
 				},
 				ctx.signal,
 			);
