@@ -140,13 +140,42 @@ AGY recalls before every model invocation and retains only a `model_stop` execut
 
 ## Behavior
 
-- Before each non-empty prompt, recalls up to eight global memories using the first 4,000 prompt characters.
+- Before each substantive prompt, recalls up to five memories using the first 4,000 prompt characters.
+- Skips prompts under 16 characters and prompts opening with a host slash-command, so acknowledgements ("g", "yes, do it") and `/commit` cost neither a recall nor a stored turn.
 - Limits each injected memory to 2,000 characters and XML-escapes it before adding it as untrusted background context.
 - After each settled main-session turn, stores the latest real user text and final assistant text, limited to 8,000 characters each.
-- Stores records globally as `<host>-session`, with host session and turn IDs as metadata.
+- Stores turns at session scope as `projects/<project>/<host>-session.md`, importance 0.25, expiring after 14 days, with host session and turn IDs as metadata.
 - Fails open. A missing server, transport error, malformed result, or five-second timeout leaves the host turn usable.
 
-Command hooks retain their active prompt temporarily under `$MNEMOSYNE_MEMORY_STATE_DIR`, or `~/.local/state/mnemosyne-memory` by default. Global retention makes stored interactions available to every configured agent and project sharing the Mnemosyne data directory. Do not submit content you do not want persisted.
+`<project>` is the `origin` remote's repository name, falling back to the main worktree's directory name and then the working directory. Linked worktrees resolve to the parent repository, so a repo keeps one namespace.
+
+### Configuration
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MNEMOSYNE_MEMORY_RETAIN` | `1` | `0` runs recall-only; nothing is written. |
+| `MNEMOSYNE_MEMORY_RECALL_LIMIT` | `5` | Memories injected per prompt. |
+| `MNEMOSYNE_MEMORY_MIN_PROMPT` | `16` | Minimum prompt length worth a round trip; `0` disables the gate. |
+| `MNEMOSYNE_MEMORY_IMPORTANCE` | `0.25` | Importance of stored turns. |
+| `MNEMOSYNE_MEMORY_SOURCE` | `projects/<project>/<host>-session.md` | Source tag of stored turns. |
+| `MNEMOSYNE_MEMORY_SCOPE` | `session` | `global` shares turns across every project. |
+| `MNEMOSYNE_MEMORY_TTL_DAYS` | `14` | Retention window; `0` stores turns without an expiry. |
+
+Low importance and the expiry window keep a transcript stream from outranking hand-curated memories in recall: importance is a scored term in hybrid ranking, and the recall path drops rows whose `valid_until` has passed. Session scope does *not* narrow recall — recall filters on `superseded_by` and `valid_until` only — but it does keep stored turns out of any query selecting `scope = 'global'`, which is how session-start injections usually select their always-on rows. A bank whose curated rows are the authority is best served by `MNEMOSYNE_MEMORY_RETAIN=0` plus explicit `mnemosyne_remember` calls.
+
+### Bank selection
+
+The command hooks and the Pi extension spawn `mnemosyne mcp` over stdio. That transport passes only an allowlisted environment to the child, which omits every `MNEMOSYNE_*` variable — an unforwarded server resolves its data directory from its own defaults rather than the one the `mnemosyne` CLI uses, then reads and writes a bank nothing else sees. Both entrypoints therefore forward `MNEMOSYNE_*` and `HERMES_HOME` explicitly.
+
+Confirm every agent agrees on one bank before trusting retention:
+
+```sh
+mnemosyne stats            # the DB path the CLI resolves
+```
+
+Export `MNEMOSYNE_DATA_DIR` in the environment that launches the host when that path is not the bank you intend to use. Under OMP the server is the one configured in OMP's `mcpServers`, so its environment is OMP's to set.
+
+Command hooks retain their active prompt temporarily under `$MNEMOSYNE_MEMORY_STATE_DIR`, or `~/.local/state/mnemosyne-memory` by default. Stored interactions are readable by every agent sharing the Mnemosyne data directory. Do not submit content you do not want persisted.
 
 `memory.backend: off` intentionally disables OMP-native `/memory`, `ctx.memory`, `memory://`, `recall`, and `retain`. The OMP extension adds no duplicate MCP tools or `/memory` command.
 
@@ -158,6 +187,8 @@ Use OMP's existing `mcp__mnemosyne_remember`, `mcp__mnemosyne_recall`, `mcp__mne
 bun test
 bun run typecheck
 ```
+
+`integration.test.ts` drives a real `mnemosyne mcp` server end to end and is skipped when the binary is absent. It points `MNEMOSYNE_DATA_DIR` at a temporary directory, so it never touches a real bank.
 
 ## Troubleshooting
 
