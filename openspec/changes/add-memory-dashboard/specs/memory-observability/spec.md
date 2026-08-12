@@ -87,7 +87,7 @@ The dashboard SHALL accept a non-empty prompt and a result limit from 1 through 
 - **THEN** the dashboard rejects the request without invoking Mnemosyne
 
 ### Requirement: Recall explanation
-The recall probe SHALL offer an explanation toggle that is off by default. When enabled, it SHALL request Mnemosyne's structured explanation and display it as a request-level diagnostic panel separate from individual result content.
+The recall probe SHALL require the recorded minimum Mnemosyne server version that guarantees structured explanation output. It SHALL offer an explanation toggle that is off by default. When enabled, it SHALL request Mnemosyne's structured explanation and display it as a request-level diagnostic panel separate from individual result content.
 
 #### Scenario: Explanation is disabled
 - **WHEN** an operator submits a recall with the explanation toggle off
@@ -96,6 +96,10 @@ The recall probe SHALL offer an explanation toggle that is off by default. When 
 #### Scenario: Explanation is enabled
 - **WHEN** an operator submits a recall with the explanation toggle on
 - **THEN** the dashboard displays the returned structured request trace without rendering raw JSON as the primary presentation
+
+#### Scenario: Server lacks the guaranteed explanation contract
+- **WHEN** the installed Mnemosyne server predates the recorded minimum version
+- **THEN** the dashboard blocks the recall view with the same actionable incompatibility state used for unsupported statistics
 
 ### Requirement: Sensitive recall data stays ephemeral
 The dashboard SHALL transmit recall prompts in request bodies rather than URLs and SHALL NOT persist prompts, explanation traces, expanded state, or returned memory content.

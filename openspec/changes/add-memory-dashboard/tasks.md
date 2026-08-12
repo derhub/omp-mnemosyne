@@ -1,6 +1,6 @@
 ## 1. Upstream Release Gate
 
-- [ ] 1.1 Confirm an official `AxDSan/mnemosyne` release exposes the required `mnemosyne_stats` schema version, server version, bank identity, physical and recallable memory/session counts, and separately identified BEAM tiers; record the supported schema and minimum server versions in the design before starting any dashboard implementation.
+- [ ] 1.1 Confirm an official `AxDSan/mnemosyne` release exposes the required `mnemosyne_stats` schema version, server version, bank identity, physical and recallable memory/session counts, separately identified BEAM tiers, and guaranteed structured `mnemosyne_recall` explanation output; record the supported statistics schema and minimum server versions in the design before starting any dashboard implementation.
 
 ## 2. React Web Foundation
 
@@ -10,7 +10,7 @@
 
 ## 3. Read-Only Mnemosyne Boundary
 
-- [ ] 3.1 Implement request-scoped, server-only MCP calls for compatible statistics, independent sync status, and POST recall with forwarded bank environment, five-second timeouts, runtime response parsing, and guaranteed transport closure.
+- [ ] 3.1 Implement request-scoped, server-only MCP calls for compatible statistics, independent sync status, and POST recall with version-gated structured explanation parsing, forwarded bank environment, five-second timeouts, runtime response validation, and guaranteed transport closure.
 - [ ] 3.2 Enforce loopback-only startup, loopback Host validation, foreign Origin rejection, and no permissive CORS before any MCP invocation.
 - [ ] 3.3 Add focused server tests for compatibility gating, physical versus recallable counts, partial sync failure, malformed responses, timeout, Host/Origin rejection, recall limits 1 through 20, explanation mode, and stale-result clearing.
 

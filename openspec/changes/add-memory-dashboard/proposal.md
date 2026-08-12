@@ -25,6 +25,6 @@ None.
 
 - Adds the `apps/web` Bun workspace package and its frontend dependencies.
 - Adds `@google/design.md` as a web development dependency for design-system validation.
-- Depends on an official Mnemosyne release that stabilizes `mnemosyne_stats`, exposes an explicit statistics schema version, and defines physical and recallable memory/session counts.
-- Blocks dashboard implementation until that upstream release exists; legacy statistics responses are not adapted.
+- Depends on an official Mnemosyne release that stabilizes `mnemosyne_stats`, exposes an explicit statistics schema version, defines physical and recallable memory/session counts, and guarantees the structured `mnemosyne_recall` explanation response.
+- Blocks dashboard implementation until that upstream release exists; legacy statistics and recall-explanation responses are not adapted.
 - Adds a server-side, read-only Mnemosyne MCP client without changing the existing automatic recall and retention integrations.

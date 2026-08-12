@@ -2,7 +2,7 @@
 
 See `proposal.md` for motivation and `specs/memory-observability/spec.md` for observable behavior. This repository contains a Bun package for agent recall and retention integrations, not the Mnemosyne server. Existing entrypoints call `mnemosyne mcp` over stdio and intentionally reduce recall results to content-only values. The dashboard needs rich read responses without changing those paths.
 
-The installed Mnemosyne 3.15.1 MCP surface does not provide a stable, versioned statistics contract for every promised overview metric. The dashboard therefore has a hard external prerequisite in `AxDSan/mnemosyne`: an official release must stabilize `mnemosyne_stats`, include a statistics schema version and server version, and define physical and recallable memory/session counts. No dashboard implementation starts before that release.
+The installed Mnemosyne 3.15.1 MCP surface already returns a structured trace for `mnemosyne_recall` with `explain: true`, but it does not provide a stable, versioned statistics contract for every promised overview metric. The dashboard therefore has a hard external prerequisite in `AxDSan/mnemosyne`: an official release must stabilize `mnemosyne_stats`, include a statistics schema version and server version, define physical and recallable memory/session counts, and guarantee the structured recall-explanation response at that server version. No dashboard implementation starts before that release.
 
 Mnemosyne is local, its browser-incompatible transport is stdio, and its bank depends on forwarded `MNEMOSYNE_*` and `HERMES_HOME` environment variables. The browser must not receive database access or mutation tools.
 
@@ -29,7 +29,7 @@ Mnemosyne is local, its browser-incompatible transport is stdio, and its bank de
 
 ## Decisions
 
-### Gate implementation on a versioned upstream statistics schema
+### Gate implementation on versioned upstream read contracts
 
 The prerequisite release will extend the general-purpose `mnemosyne_stats` tool rather than add a dashboard-specific endpoint. Its response contract must include:
 
@@ -40,9 +40,11 @@ The prerequisite release will extend the general-purpose `mnemosyne_stats` tool 
 - physical and recallable distinct session counts
 - separately identified BEAM tier counts
 
-Recallable means non-superseded and not expired at query time. Session counts use distinct session identifiers in the corresponding physical or recallable set. The dashboard gates on the statistics schema version, reports the server version for remediation, and rejects legacy or malformed payloads. The exact supported schema version is recorded after the official release and before implementation begins.
+The same released server version must guarantee that `mnemosyne_recall` accepts `explain: true` and returns a structured request trace containing its filters, weights, embedding state, stages, candidates, and truncation data. This capability exists in the installed 3.15.1 server; the gate records it as part of the minimum supported release instead of adding a second provisional API or a shape-inference fallback.
 
-Waiting for upstream avoids a private SQLite dependency, temporary fork, provisional mock contract, and permanent legacy adapter.
+Recallable means non-superseded and not expired at query time. Session counts use distinct session identifiers in the corresponding physical or recallable set. The dashboard gates statistics on the schema version and the explanation feature on the recorded minimum server version, reports both versions for remediation, and rejects legacy or malformed payloads. The exact supported statistics schema and minimum server versions are recorded after the official release and before implementation begins.
+
+Waiting for upstream avoids a private SQLite dependency, temporary fork, provisional mock contract, legacy adapter, and unversioned explanation assumption.
 
 ### Use an isolated React and TanStack Start application
 
