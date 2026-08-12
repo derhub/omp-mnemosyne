@@ -110,7 +110,17 @@ async function loadPending(path: string): Promise<PendingInteraction | undefined
 	}
 }
 
+async function pendingIgnored(host: Host, sessionId: string, turnId: string, directory: string): Promise<boolean> {
+	try {
+		await readFile(statePath(host, sessionId, turnId, directory, "ignored"), "utf8");
+		return true;
+	} catch (error) {
+		return !(error instanceof Error && "code" in error && error.code === "ENOENT");
+	}
+}
+
 async function savePending(host: Host, sessionId: string, turnId: string, pending: PendingInteraction, directory: string): Promise<void> {
+	if (await pendingIgnored(host, sessionId, turnId, directory)) return;
 	await mkdir(directory, { recursive: true, mode: 0o700 });
 	await chmod(directory, 0o700);
 	const path = statePath(host, sessionId, turnId, directory);
@@ -120,6 +130,21 @@ async function savePending(host: Host, sessionId: string, turnId: string, pendin
 }
 
 async function claimPending(host: Host, sessionId: string, turnId: string, directory: string): Promise<PendingInteraction | undefined> {
+	if (await pendingIgnored(host, sessionId, turnId, directory)) {
+		try {
+			await clearPending(host, sessionId, turnId, directory);
+		} catch (error) {
+			console.error(`Mnemosyne hook: pending retention cleanup unavailable (${error instanceof Error ? error.message : "unknown error"})`);
+			return undefined;
+		}
+		try {
+			await clearPending(host, sessionId, turnId, directory, "ignored");
+		} catch (error) {
+			console.error(`Mnemosyne hook: skipped retention cleanup unavailable (${error instanceof Error ? error.message : "unknown error"})`);
+		}
+		return undefined;
+	}
+
 	const pending = statePath(host, sessionId, turnId, directory);
 	const inFlight = statePath(host, sessionId, turnId, directory, "inflight");
 	try {
@@ -131,14 +156,13 @@ async function claimPending(host: Host, sessionId: string, turnId: string, direc
 }
 
 async function invalidatePending(host: Host, sessionId: string, turnId: string, directory: string): Promise<void> {
+	const ignored = statePath(host, sessionId, turnId, directory, "ignored");
 	try {
-		await rename(
-			statePath(host, sessionId, turnId, directory),
-			statePath(host, sessionId, turnId, directory, "ignored"),
-		);
+		await writeFile(ignored, "", { flag: "wx", mode: 0o600 });
 	} catch (error) {
-		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+		if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
 	}
+	await clearPending(host, sessionId, turnId, directory);
 }
 
 async function restorePending(host: Host, sessionId: string, turnId: string, directory: string): Promise<void> {

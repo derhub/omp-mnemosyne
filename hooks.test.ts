@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -359,6 +360,50 @@ test("hooks restore pending retention after an incomplete Stop", async () => {
 	}]);
 });
 
+
+test("hooks ignore pending turns marked skipped before cleanup", async () => {
+	const state = await stateDirectory();
+	const { calls, value } = operations();
+	const key = createHash("sha256").update("claude\0session-1\0active").digest("hex");
+	await writeFile(join(state, `${key}.json`), JSON.stringify({ prompt: "stale request" }));
+	await writeFile(join(state, `${key}.ignored`), "");
+
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+		last_assistant_message: "new answer",
+	}, value, state);
+
+	expect(calls.remember).toEqual([]);
+});
+
+test("a valid prompt waits for a pending skipped Stop", async () => {
+	const state = await stateDirectory();
+	const { calls, value } = operations();
+
+	await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "g",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "valid request after a skipped turn",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+		last_assistant_message: "skipped answer",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+		last_assistant_message: "valid answer",
+	}, value, state);
+
+	expect(calls.remember).toEqual([]);
+});
 
 test("a slash-command still opens the session with standing memory", async () => {
 	const state = await stateDirectory();
