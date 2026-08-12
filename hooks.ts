@@ -4,8 +4,21 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { isRetainablePrompt, recallLimit, retainEnabled, retentionPolicy, serverEnvironment } from "./config";
-import { formatInteraction, parseRecallResponse, parseRememberResponse, renderMemoryBlock, type McpTextResult } from "./core";
+import { readGlobalRules, readProjectIndex } from "./bank";
+import {
+	recallBudget,
+	recallCap,
+	recallEnabled,
+	recallFloor,
+	recallIndexes,
+	isRetainablePrompt,
+	projectIndexSource,
+	projectName,
+	retainEnabled,
+	retentionPolicy,
+	serverEnvironment,
+} from "./config";
+import { formatInteraction, parseRememberResponse, renderRecallBlock, type McpTextResult } from "./core";
 
 const timeoutMs = 5_000;
 
@@ -14,7 +27,7 @@ type Host = "agy" | "claude" | "codex";
 type HookInput = Record<string, unknown>;
 
 export type HookOperations = {
-	recall(query: string): Promise<string | undefined>;
+	recall(): Promise<string | undefined>;
 	remember(content: string, metadata: Record<string, string | number>): Promise<void>;
 };
 
@@ -68,6 +81,23 @@ function stateDirectory(): string {
 function statePath(host: Host, sessionId: string, turnId: string, directory: string): string {
 	const key = createHash("sha256").update(`${host}\0${sessionId}\0${turnId}`).digest("hex");
 	return join(directory, `${key}.json`);
+}
+
+/** Keyed by session alone: a new session brings a new key, so nothing needs resetting. */
+function recalledPath(host: Host, sessionId: string, directory: string): string {
+	const key = createHash("sha256").update(`${host}\0${sessionId}\0recalled`).digest("hex");
+	return join(directory, `${key}.recalled`);
+}
+
+async function claimRecall(host: Host, sessionId: string, directory: string): Promise<boolean> {
+	const path = recalledPath(host, sessionId, directory);
+	try {
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		await writeFile(path, "", { flag: "wx", mode: 0o600 });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function loadPending(host: Host, sessionId: string, turnId: string, directory: string): Promise<PendingInteraction | undefined> {
@@ -146,7 +176,7 @@ async function readAgyTranscript(input: HookInput): Promise<{ user?: string; ass
 }
 
 async function callMnemosyne(
-	toolName: "mnemosyne_recall" | "mnemosyne_remember",
+	toolName: "mnemosyne_remember",
 	args: Record<string, unknown>,
 ): Promise<McpTextResult> {
 	const signal = AbortSignal.timeout(timeoutMs);
@@ -168,9 +198,19 @@ async function callMnemosyne(
 
 export function createOperations(host: Host, cwd?: string, call = callMnemosyne): HookOperations {
 	return {
-		async recall(query) {
-			const result = await call("mnemosyne_recall", { query, limit: recallLimit() });
-			return renderMemoryBlock(parseRecallResponse(result));
+		async recall() {
+			if (!recallEnabled()) return undefined;
+
+			const [rules, index] = await Promise.all([
+				readGlobalRules(recallFloor(), recallIndexes()),
+				readProjectIndex(projectIndexSource(cwd)),
+			]);
+			return renderRecallBlock(rules, index, {
+				project: projectName(cwd),
+				indexSource: projectIndexSource(cwd),
+				cap: recallCap(),
+				budget: recallBudget(),
+			});
 		},
 		async remember(content, metadata) {
 			if (!retainEnabled()) return;
@@ -207,15 +247,24 @@ function stopOutput(host: Host): Record<string, unknown> {
 	return host === "agy" ? { decision: "allow" } : {};
 }
 
-async function handleRecall(host: Host, input: HookInput, operations: HookOperations, directory: string): Promise<Record<string, unknown>> {
+async function handlePrompt(host: Host, input: HookInput, operations: HookOperations, directory: string): Promise<Record<string, unknown>> {
 	const ids = hostIds(host, input);
 	const prompt = host === "agy" ? (await readAgyTranscript(input)).user : text(input.prompt);
 	if (!prompt || !ids.sessionId || !ids.turnId) return recallOutput(host, undefined);
-	if (!isRetainablePrompt(prompt)) return recallOutput(host, undefined);
+
+	// Retention wants the prompt worth storing; recall is owed to every session,
+	// including one opened with an acknowledgement or a slash-command.
+	if (isRetainablePrompt(prompt)) {
+		try {
+			await savePending(host, ids.sessionId, ids.turnId, { prompt }, directory);
+		} catch (error) {
+			console.error(`Mnemosyne hook: retention unavailable (${error instanceof Error ? error.message : "unknown error"})`);
+		}
+	}
 
 	try {
-		await savePending(host, ids.sessionId, ids.turnId, { prompt }, directory);
-		return recallOutput(host, await operations.recall(prompt.slice(0, 4_000)));
+		if (!(await claimRecall(host, ids.sessionId, directory))) return recallOutput(host, undefined);
+		return recallOutput(host, await operations.recall());
 	} catch (error) {
 		console.error(`Mnemosyne hook: recall unavailable (${error instanceof Error ? error.message : "unknown error"})`);
 		return recallOutput(host, undefined);
@@ -258,7 +307,7 @@ export async function handleHook(
 ): Promise<Record<string, unknown>> {
 	const event = text(input.hook_event_name);
 	if ((host === "agy" && event === "PreInvocation") || (host !== "agy" && event === "UserPromptSubmit")) {
-		return handleRecall(host, input, operations, directory);
+		return handlePrompt(host, input, operations, directory);
 	}
 	if (event === "Stop") return handleRetention(host, input, operations, directory);
 	return stopOutput(host);

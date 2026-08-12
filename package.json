@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit --module esnext --moduleResolution bundler --target es2024 --skipLibCheck config.ts core.ts pi.ts hooks.ts index.ts"
+    "typecheck": "tsc --noEmit --module esnext --moduleResolution bundler --target es2024 --skipLibCheck bank.ts config.ts core.ts pi.ts hooks.ts index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.0.0"

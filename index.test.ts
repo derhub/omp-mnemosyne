@@ -4,23 +4,20 @@ type Call = { tool: string; args: Record<string, unknown> };
 
 const calls: Call[] = [];
 
-function response(tool: string): { content: { type: string; text: string }[] } {
-	return {
-		content: [{
-			type: "text",
-			text: tool === "mnemosyne_recall"
-				? JSON.stringify({ status: "ok", results: [{ content: "recalled fact" }] })
-				: JSON.stringify({ status: "stored", memory_id: "memory-1" }),
-		}],
-	};
+function response(): { content: { type: string; text: string }[] } {
+	return { content: [{ type: "text", text: JSON.stringify({ status: "stored", memory_id: "memory-1" }) }] };
 }
 
 mock.module("@oh-my-pi/pi-coding-agent/mcp", () => ({
 	MCPManager: { instance: () => ({ waitForConnection: async () => ({}) }) },
 	callTool: async (_connection: unknown, tool: string, args: Record<string, unknown>) => {
 		calls.push({ tool, args });
-		return response(tool);
+		return response();
 	},
+}));
+
+mock.module("./bank", () => ({
+	sessionRecall: async () => (process.env.MNEMOSYNE_MEMORY_RECALL === "0" ? undefined : "# Mnemosyne Memory\nstanding rules"),
 }));
 
 const { default: mnemosyneMemory } = await import("./index");
@@ -54,17 +51,51 @@ function settledTurn(prompt: string): Record<string, unknown> {
 afterEach(() => {
 	calls.length = 0;
 	delete process.env.MNEMOSYNE_MEMORY_RETAIN;
+	delete process.env.MNEMOSYNE_MEMORY_RECALL;
 });
 
-test("OMP appends recalled memory to the turn's system prompt", async () => {
-	const result = await harness().get("before_agent_start")?.({
-		prompt: "how does the retention scope work",
-		systemPrompt: ["base prompt"],
-	}, ctx);
+test("OMP delivers standing memory as a hidden message on the session's first turn", async () => {
+	const result = await harness().get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx);
 
-	expect(result?.systemPrompt).toEqual(["base prompt", expect.stringContaining("recalled fact")]);
-	expect(calls).toHaveLength(1);
-	expect(calls[0]?.args).toMatchObject({ limit: 5 });
+	expect(result?.message).toEqual({
+		customType: "mnemosyne-memory",
+		content: expect.stringContaining("standing rules"),
+		display: false,
+	});
+	expect(calls).toEqual([]);
+});
+
+test("OMP delivers standing memory once per session", async () => {
+	const handlers = harness();
+
+	await handlers.get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx);
+	const second = await handlers.get("before_agent_start")?.({ prompt: "and the recall floor" }, ctx);
+
+	expect(second).toBeUndefined();
+});
+
+test("OMP delivers standing memory again for a session started in the same process", async () => {
+	const handlers = harness();
+
+	await handlers.get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx);
+	await handlers.get("session_start")?.({}, ctx);
+	const afterRestart = await handlers.get("before_agent_start")?.({ prompt: "and the recall floor" }, ctx);
+
+	expect(afterRestart?.message).toBeDefined();
+});
+
+test("OMP delivers standing memory to a session opened with an acknowledgement", async () => {
+	const result = await harness().get("before_agent_start")?.({ prompt: "g" }, ctx);
+
+	expect(result?.message).toBeDefined();
+});
+
+test("OMP honours the recall opt-out", async () => {
+	process.env.MNEMOSYNE_MEMORY_RECALL = "0";
+
+	const result = await harness().get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx);
+
+	expect(result).toBeUndefined();
 });
 
 test("OMP stores a settled turn under the project namespace at session scope", async () => {
@@ -81,11 +112,8 @@ test("OMP stores a settled turn under the project namespace at session scope", a
 	expect(calls[0]?.args.source).toMatch(/^projects\/.+\/omp-session\.md$/);
 });
 
-test("OMP skips acknowledgement turns on both recall and retention", async () => {
-	const handlers = harness();
-
-	await handlers.get("before_agent_start")?.({ prompt: "g", systemPrompt: ["base prompt"] }, ctx);
-	await handlers.get("session_stop")?.(settledTurn("g"), ctx);
+test("OMP skips acknowledgement turns on retention", async () => {
+	await harness().get("session_stop")?.(settledTurn("g"), ctx);
 
 	expect(calls).toEqual([]);
 });

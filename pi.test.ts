@@ -4,23 +4,20 @@ type Call = { tool: string; args: Record<string, unknown> };
 
 const calls: Call[] = [];
 
-function response(tool: string): { content: { type: string; text: string }[] } {
-	return {
-		content: [{
-			type: "text",
-			text: tool === "mnemosyne_recall"
-				? JSON.stringify({ status: "ok", results: [{ content: "recalled fact" }] })
-				: JSON.stringify({ status: "stored", memory_id: "memory-1" }),
-		}],
-	};
+function response(): { content: { type: string; text: string }[] } {
+	return { content: [{ type: "text", text: JSON.stringify({ status: "stored", memory_id: "memory-1" }) }] };
 }
+
+mock.module("./bank", () => ({
+	sessionRecall: async () => (process.env.MNEMOSYNE_MEMORY_RECALL === "0" ? undefined : "# Mnemosyne Memory\nstanding rules"),
+}));
 
 mock.module("@modelcontextprotocol/client", () => ({
 	Client: class {
 		async connect(): Promise<void> {}
 		async callTool({ name, arguments: args }: { name: string; arguments: Record<string, unknown> }) {
 			calls.push({ tool: name, args });
-			return response(name);
+			return response();
 		}
 		async close(): Promise<void> {}
 	},
@@ -46,6 +43,10 @@ function harness(): Map<string, Handler> {
 	return handlers;
 }
 
+function ctx(): unknown {
+	return { cwd: process.cwd(), signal: new AbortController().signal };
+}
+
 function context(prompt: string): unknown {
 	const entries = [
 		{ type: "message", message: { role: "user", content: prompt } },
@@ -67,17 +68,51 @@ function context(prompt: string): unknown {
 afterEach(() => {
 	calls.length = 0;
 	delete process.env.MNEMOSYNE_MEMORY_RETAIN;
+	delete process.env.MNEMOSYNE_MEMORY_RECALL;
 });
 
-test("Pi appends recalled memory to the turn's system prompt", async () => {
-	const result = await harness().get("before_agent_start")?.(
-		{ prompt: "how does the retention scope work", systemPrompt: "base prompt" },
-		{ signal: new AbortController().signal },
-	);
+test("Pi delivers standing memory as a hidden message on the session's first turn", async () => {
+	const result = await harness().get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx());
 
-	expect(result?.systemPrompt).toContain("base prompt");
-	expect(result?.systemPrompt).toContain("recalled fact");
-	expect(calls[0]?.args).toMatchObject({ limit: 5 });
+	expect(result?.message).toEqual({
+		customType: "mnemosyne-memory",
+		content: expect.stringContaining("standing rules"),
+		display: false,
+	});
+	expect(calls).toEqual([]);
+});
+
+test("Pi delivers standing memory once per session", async () => {
+	const handlers = harness();
+
+	await handlers.get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx());
+	const second = await handlers.get("before_agent_start")?.({ prompt: "and the recall floor" }, ctx());
+
+	expect(second).toBeUndefined();
+});
+
+test("Pi delivers standing memory again for a session started in the same process", async () => {
+	const handlers = harness();
+
+	await handlers.get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx());
+	await handlers.get("session_start")?.({}, ctx());
+	const afterRestart = await handlers.get("before_agent_start")?.({ prompt: "and the recall floor" }, ctx());
+
+	expect(afterRestart?.message).toBeDefined();
+});
+
+test("Pi delivers standing memory to a session opened with a slash-command", async () => {
+	const result = await harness().get("before_agent_start")?.({ prompt: "/commit the staged change" }, ctx());
+
+	expect(result?.message).toBeDefined();
+});
+
+test("Pi honours the recall opt-out", async () => {
+	process.env.MNEMOSYNE_MEMORY_RECALL = "0";
+
+	const result = await harness().get("before_agent_start")?.({ prompt: "how does the retention scope work" }, ctx());
+
+	expect(result).toBeUndefined();
 });
 
 test("Pi stores a settled turn under the project namespace at session scope", async () => {
@@ -94,11 +129,8 @@ test("Pi stores a settled turn under the project namespace at session scope", as
 	expect(calls[0]?.args.source).toMatch(/^projects\/.+\/pi-session\.md$/);
 });
 
-test("Pi skips acknowledgement turns on both recall and retention", async () => {
-	const handlers = harness();
-
-	await handlers.get("before_agent_start")?.({ prompt: "g", systemPrompt: "base prompt" }, { signal: new AbortController().signal });
-	await handlers.get("agent_settled")?.({}, context("g"));
+test("Pi skips acknowledgement turns on retention", async () => {
+	await harness().get("agent_settled")?.({}, context("g"));
 
 	expect(calls).toEqual([]);
 });

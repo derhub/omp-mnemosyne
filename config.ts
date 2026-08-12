@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { basename, dirname } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 
 export interface RetentionPolicy {
 	importance: number;
@@ -25,8 +26,36 @@ export function retainEnabled(): boolean {
 	return raw === undefined || !["0", "false", "off", "no"].includes(raw);
 }
 
-export function recallLimit(): number {
-	return Math.max(1, Math.trunc(envNumber("MNEMOSYNE_MEMORY_RECALL_LIMIT", 5)));
+export function recallEnabled(): boolean {
+	const raw = envText("MNEMOSYNE_MEMORY_RECALL")?.toLowerCase();
+	return raw === undefined || !["0", "false", "off", "no"].includes(raw);
+}
+
+export function recallFloor(): number {
+	return envNumber("MNEMOSYNE_MEMORY_RECALL_FLOOR", 0.95);
+}
+
+export function recallIndexes(): string[] {
+	return (envText("MNEMOSYNE_MEMORY_RECALL_INDEXES") ?? "MEMORY.md,FEEDBACK.md")
+		.split(",")
+		.map(name => name.trim())
+		.filter(Boolean);
+}
+
+export function recallCap(): number {
+	return Math.max(1, Math.trunc(envNumber("MNEMOSYNE_MEMORY_RECALL_CAP", 280)));
+}
+
+export function recallBudget(): number {
+	return Math.max(1, Math.trunc(envNumber("MNEMOSYNE_MEMORY_RECALL_BUDGET", 12_000)));
+}
+
+export function bankPath(): string {
+	return join(envText("MNEMOSYNE_DATA_DIR") ?? join(homedir(), ".memories"), "mnemosyne.db");
+}
+
+export function projectIndexSource(cwd: string = process.cwd()): string {
+	return `projects/${projectName(cwd)}/MEMORY.md`;
 }
 
 export function minPromptLength(): number {
@@ -53,7 +82,7 @@ function git(args: readonly string[], cwd: string): string | undefined {
 const projectNames = new Map<string, string>();
 
 /**
- * Mirrors the SessionStart injection hook's namespace: remote name, else the main
+ * Mirrors the session-recall namespace: remote name, else the main
  * worktree's directory. `--git-common-dir` keeps linked worktrees on the parent repo's
  * namespace instead of giving each worktree its own.
  */

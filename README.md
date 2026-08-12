@@ -6,7 +6,7 @@ Automatic recall and retention for [Oh My Pi](https://github.com/can1357/oh-my-p
 
 - OMP 17.2.12 or later, Pi 0.84.1 or later, Codex CLI, Claude Code, or AGY.
 - Mnemosyne 3.15.1 or later on `PATH`.
-- Node.js 22.19 or later for Pi.
+- Node.js 24 or later for Pi, where `node:sqlite` is stable and unflagged.
 - Bun for command hooks and tests.
 
 ## Install
@@ -56,7 +56,7 @@ For development, load the extension directly:
 pi -e /path/to/mnemosyne-memory/pi.ts
 ```
 
-Pi starts its own `mnemosyne mcp` stdio client for automatic recall and retention. Configure the same server through `pi-mcp-adapter` only if you also want Pi's explicit `mcp__mnemosyne_*` tools. Restart Pi after changing its settings.
+Pi starts its own `mnemosyne mcp` stdio client for retention. Configure the same server through `pi-mcp-adapter` so the agent has the `mcp__mnemosyne_*` tools it needs to recall on its own. Restart Pi after changing its settings.
 
 ### Codex
 
@@ -84,7 +84,7 @@ Merge the following into `~/.codex/hooks.json` or `.codex/hooks.json`, replacing
 }
 ```
 
-Codex recalls on `UserPromptSubmit` and retains the completed response on `Stop`.
+Codex retains the completed response on `Stop`. The `UserPromptSubmit` hook records the prompt for that retention, and recalls once on the session's first prompt.
 
 ### Claude Code
 
@@ -111,7 +111,7 @@ Merge the following into `~/.claude/settings.json` or `.claude/settings.json`, r
 }
 ```
 
-Claude Code recalls on `UserPromptSubmit` and retains the completed response from its `Stop` event's `last_assistant_message` field.
+Claude Code retains the completed response from its `Stop` event's `last_assistant_message` field. The `UserPromptSubmit` hook records the prompt for that retention, and recalls once on the session's first prompt.
 
 ### AGY
 
@@ -136,32 +136,43 @@ Merge the following into `.agents/hooks.json` or `~/.gemini/config/hooks.json`, 
 }
 ```
 
-AGY recalls before every model invocation and retains only a `model_stop` execution that reports `fullyIdle: true`.
+AGY retains only a `model_stop` execution that reports `fullyIdle: true`. The `PreInvocation` hook recalls once on the session's first invocation.
 
 ## Behavior
 
-- Before each substantive prompt, recalls up to five memories using the first 4,000 prompt characters.
-- Skips prompts under 16 characters and prompts opening with a host slash-command, so acknowledgements ("g", "yes, do it") and `/commit` cost neither a recall nor a stored turn.
-- Limits each injected memory to 2,000 characters and XML-escapes it before adding it as untrusted background context.
+- Recalls once, on the session's first agent turn: every live global memory at or above the importance floor, every live global memory whose source names a configured index, and the current project's index. XML-escaped, labelled untrusted background context, and never repeated for the rest of the session.
+- Leaves every further retrieval to the agent through `mnemosyne_recall`, which the block names. Nothing is recalled per turn.
+- Recalls regardless of the prompt, so a session opened with "g" or `/commit` still starts with its standing rules and project index.
+- Bounds the block three ways: the floor governs which global rows qualify, a per-entry cap holds each project index entry to a pointer, and a whole-block budget truncates the tail and reports how many memories it withheld.
+- Excludes any memory that is superseded, consolidated away, or past its `valid_until`.
+- Skips prompts under 16 characters and prompts opening with a host slash-command for retention, so acknowledgements and `/commit` cost no stored turn.
 - After each settled main-session turn, stores the latest real user text and final assistant text, limited to 8,000 characters each.
 - Stores turns at session scope as `projects/<project>/<host>-session.md`, importance 0.25, expiring after 14 days, with host session and turn IDs as metadata.
-- Fails open. A missing server, transport error, malformed result, or five-second timeout leaves the host turn usable.
+- Fails open. A missing bank, missing server, transport error, malformed result, or five-second timeout leaves the host turn usable.
 
-`<project>` is the `origin` remote's repository name, falling back to the main worktree's directory name and then the working directory. Linked worktrees resolve to the parent repository, so a repo keeps one namespace.
+`<project>` is the `origin` remote's repository name, falling back to the main worktree's directory name and then the working directory. Linked worktrees resolve to the parent repository, so a repo keeps one namespace. The project index is `projects/<project>/MEMORY.md`, the same namespace retention writes under.
+
+Each host needs the `mnemosyne` MCP server reachable for the agent to recall on its own. Session recall itself reads the bank directly and needs no server.
 
 ### Configuration
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `MNEMOSYNE_MEMORY_RETAIN` | `1` | `0` runs recall-only; nothing is written. |
-| `MNEMOSYNE_MEMORY_RECALL_LIMIT` | `5` | Memories injected per prompt. |
-| `MNEMOSYNE_MEMORY_MIN_PROMPT` | `16` | Minimum prompt length worth a round trip; `0` disables the gate. |
+| `MNEMOSYNE_MEMORY_RETAIN` | `1` | `0` writes nothing. |
+| `MNEMOSYNE_MEMORY_RECALL` | `1` | `0` disables session recall; retention is unaffected. |
+| `MNEMOSYNE_MEMORY_RECALL_FLOOR` | `0.95` | Importance at or above which a global memory joins the block. |
+| `MNEMOSYNE_MEMORY_RECALL_INDEXES` | `MEMORY.md,FEEDBACK.md` | Global sources that join the block regardless of importance. |
+| `MNEMOSYNE_MEMORY_RECALL_CAP` | `280` | Per-entry character cap on project index entries. |
+| `MNEMOSYNE_MEMORY_RECALL_BUDGET` | `12000` | Character cap on the whole block. |
+| `MNEMOSYNE_MEMORY_MIN_PROMPT` | `16` | Minimum prompt length worth retaining; `0` disables the gate. |
 | `MNEMOSYNE_MEMORY_IMPORTANCE` | `0.25` | Importance of stored turns. |
 | `MNEMOSYNE_MEMORY_SOURCE` | `projects/<project>/<host>-session.md` | Source tag of stored turns. |
 | `MNEMOSYNE_MEMORY_SCOPE` | `session` | `global` shares turns across every project. |
 | `MNEMOSYNE_MEMORY_TTL_DAYS` | `14` | Retention window; `0` stores turns without an expiry. |
 
-Low importance and the expiry window keep a transcript stream from outranking hand-curated memories in recall: importance is a scored term in hybrid ranking, and the recall path drops rows whose `valid_until` has passed. Session scope does *not* narrow recall — recall filters on `superseded_by` and `valid_until` only — but it does keep stored turns out of any query selecting `scope = 'global'`, which is how session-start injections usually select their always-on rows. A bank whose curated rows are the authority is best served by `MNEMOSYNE_MEMORY_RETAIN=0` plus explicit `mnemosyne_remember` calls.
+Indexes join the block below the floor because they are the pointers that make recall-on-demand possible; a floor high enough to hold rule bodies out would hold them out too. The floor is the knob for block size, and the budget is the backstop: a floor governs which rows qualify, not how many, so a bank that accumulates high-importance rows outgrows any floor.
+
+Low importance and the expiry window keep a transcript stream from outranking hand-curated memories: importance is a scored term in hybrid ranking, and both session recall and `mnemosyne_recall` drop rows whose `valid_until` has passed. Session scope also keeps stored turns out of the `scope = 'global'` half of the block. A bank whose curated rows are the authority is best served by `MNEMOSYNE_MEMORY_RETAIN=0` plus explicit `mnemosyne_remember` calls.
 
 ### Bank selection
 

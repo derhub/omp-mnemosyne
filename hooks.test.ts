@@ -6,14 +6,14 @@ import { join } from "node:path";
 import type { McpTextResult } from "./core";
 import { createOperations, handleHook, parseAgyTranscript, type HookOperations } from "./hooks";
 
-function operations(): { calls: { recall: string[]; remember: Array<{ content: string; metadata: Record<string, string | number> }> }; value: HookOperations } {
-	const calls = { recall: [] as string[], remember: [] as Array<{ content: string; metadata: Record<string, string | number> }> };
+function operations(): { calls: { recall: number; remember: Array<{ content: string; metadata: Record<string, string | number> }> }; value: HookOperations } {
+	const calls = { recall: 0, remember: [] as Array<{ content: string; metadata: Record<string, string | number> }> };
 	return {
 		calls,
 		value: {
-			async recall(query) {
-				calls.recall.push(query);
-				return "<memories>retained</memories>";
+			async recall() {
+				calls.recall += 1;
+				return "# Mnemosyne Memory\nstanding rules";
 			},
 			async remember(content, metadata) {
 				calls.remember.push({ content, metadata });
@@ -38,7 +38,7 @@ test("Codex recalls on submit and retains one completed turn", async () => {
 	}, value, state)).toEqual({
 		hookSpecificOutput: {
 			hookEventName: "UserPromptSubmit",
-			additionalContext: "<memories>retained</memories>",
+			additionalContext: "# Mnemosyne Memory\nstanding rules",
 		},
 	});
 
@@ -55,7 +55,7 @@ test("Codex recalls on submit and retains one completed turn", async () => {
 		last_assistant_message: "completed answer",
 	}, value, state);
 
-	expect(calls.recall).toEqual(["remember this request"]);
+	expect(calls.recall).toBe(1);
 	expect(calls.remember).toEqual([{
 		content: "User:\nremember this request\n\nAssistant:\ncompleted answer",
 		metadata: { host: "codex", codex_session_id: "session-1", codex_turn_id: "turn-1" },
@@ -104,7 +104,7 @@ test("AGY recalls and retains from its experimental transcript parser", async ()
 		hook_event_name: "PreInvocation",
 		conversationId: "conversation-1",
 		transcriptPath: transcript,
-	}, value, state)).toEqual({ injectSteps: [{ ephemeralMessage: "<memories>retained</memories>" }] });
+	}, value, state)).toEqual({ injectSteps: [{ ephemeralMessage: "# Mnemosyne Memory\nstanding rules" }] });
 
 	await writeFile(transcript, [
 		JSON.stringify({ source: "USER_INPUT", content: "<USER_REQUEST>latest request for the memory hook</USER_REQUEST>" }),
@@ -148,7 +148,7 @@ test("AGY parser tolerates malformed records and finds the latest messages", () 
 	expect(parseAgyTranscript(transcript)).toEqual({ user: "latest", assistant: "final answer" });
 });
 
-test("hooks fail open when Mnemosyne recall is unavailable", async () => {
+test("hooks fail open when the bank is unavailable", async () => {
 	const state = await stateDirectory();
 	const unavailable: HookOperations = {
 		async recall() {
@@ -167,6 +167,41 @@ test("hooks fail open when Mnemosyne recall is unavailable", async () => {
 
 afterEach(() => {
 	delete process.env.MNEMOSYNE_MEMORY_RETAIN;
+});
+
+test("hooks recall once per session and never again", async () => {
+	const state = await stateDirectory();
+	const { calls, value } = operations();
+
+	const first = await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "latest request for the memory hook",
+	}, value, state);
+	const second = await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "next request for the memory hook",
+	}, value, state);
+
+	expect(first).toHaveProperty("hookSpecificOutput");
+	expect(second).toEqual({});
+	expect(calls.recall).toBe(1);
+});
+
+test("a new session recalls again", async () => {
+	const state = await stateDirectory();
+	const { calls, value } = operations();
+
+	for (const session_id of ["session-1", "session-2"]) {
+		await handleHook("claude", {
+			hook_event_name: "UserPromptSubmit",
+			session_id,
+			prompt: "latest request for the memory hook",
+		}, value, state);
+	}
+
+	expect(calls.recall).toBe(2);
 });
 
 type McpCall = (tool: "mnemosyne_recall" | "mnemosyne_remember", args: Record<string, unknown>) => Promise<McpTextResult>;
@@ -215,20 +250,17 @@ test.each(["agy", "claude", "codex"] as const)("%s stores turns under the projec
 	expect(calls[0]?.args.valid_until).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 });
 
-test("an opt-out leaves recall working and writes nothing", async () => {
+test("an opt-out writes nothing", async () => {
 	const directory = await repository("git@github.com:derhub/omp-mnemosyne.git");
 	const { calls, value } = mcpCall();
 	process.env.MNEMOSYNE_MEMORY_RETAIN = "0";
-	const operations = createOperations("claude", directory, value);
 
-	expect(await operations.recall("what did we decide about retention")).toContain("recalled fact");
-	await operations.remember("User:\nq\n\nAssistant:\na", { host: "claude" });
+	await createOperations("claude", directory, value).remember("User:\nq\n\nAssistant:\na", { host: "claude" });
 
-	expect(calls.map(call => call.tool)).toEqual(["mnemosyne_recall"]);
-	expect(calls[0]?.args).toMatchObject({ limit: 5 });
+	expect(calls).toEqual([]);
 });
 
-test("hooks skip acknowledgement turns without recalling or retaining", async () => {
+test("an acknowledgement still opens the session with standing memory but is not retained", async () => {
 	const state = await stateDirectory();
 	const { calls, value } = operations();
 
@@ -236,18 +268,18 @@ test("hooks skip acknowledgement turns without recalling or retaining", async ()
 		hook_event_name: "UserPromptSubmit",
 		session_id: "session-1",
 		prompt: "g",
-	}, value, state)).toEqual({});
+	}, value, state)).toHaveProperty("hookSpecificOutput");
 	await handleHook("claude", {
 		hook_event_name: "Stop",
 		session_id: "session-1",
 		last_assistant_message: "completed answer",
 	}, value, state);
 
-	expect(calls.recall).toEqual([]);
+	expect(calls.recall).toBe(1);
 	expect(calls.remember).toEqual([]);
 });
 
-test("hooks skip host slash-commands", async () => {
+test("a slash-command still opens the session with standing memory", async () => {
 	const state = await stateDirectory();
 	const { calls, value } = operations();
 
@@ -255,8 +287,8 @@ test("hooks skip host slash-commands", async () => {
 		hook_event_name: "UserPromptSubmit",
 		session_id: "session-1",
 		prompt: "/commit the staged change",
-	}, value, state)).toEqual({});
-	expect(calls.recall).toEqual([]);
+	}, value, state)).toHaveProperty("hookSpecificOutput");
+	expect(calls.recall).toBe(1);
 });
 
 test("hooks ignore incomplete retention payloads", async () => {

@@ -3,11 +3,16 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expiryDate, isRetainablePrompt, minPromptLength, projectName, recallLimit, retainEnabled, retentionPolicy, serverEnvironment } from "./config";
+import { bankPath, expiryDate, recallBudget, recallCap, recallEnabled, recallFloor, recallIndexes, isRetainablePrompt, minPromptLength, projectIndexSource, projectName, retainEnabled, retentionPolicy, serverEnvironment } from "./config";
 
 const managed = [
 	"MNEMOSYNE_MEMORY_RETAIN",
-	"MNEMOSYNE_MEMORY_RECALL_LIMIT",
+	"MNEMOSYNE_MEMORY_RECALL",
+	"MNEMOSYNE_MEMORY_RECALL_FLOOR",
+	"MNEMOSYNE_MEMORY_RECALL_INDEXES",
+	"MNEMOSYNE_MEMORY_RECALL_CAP",
+	"MNEMOSYNE_MEMORY_RECALL_BUDGET",
+	"MNEMOSYNE_DATA_DIR",
 	"MNEMOSYNE_MEMORY_MIN_PROMPT",
 	"MNEMOSYNE_MEMORY_IMPORTANCE",
 	"MNEMOSYNE_MEMORY_SOURCE",
@@ -59,6 +64,51 @@ test("retention is disabled by an explicit opt-out", () => {
 	expect(retainEnabled()).toBe(false);
 });
 
+test("recall runs by default and yields to an explicit opt-out", () => {
+	expect(recallEnabled()).toBe(true);
+
+	process.env.MNEMOSYNE_MEMORY_RECALL = "0";
+
+	expect(recallEnabled()).toBe(false);
+});
+
+test("recall bounds default to the measured block size", () => {
+	expect(recallFloor()).toBe(0.95);
+	expect(recallCap()).toBe(280);
+	expect(recallBudget()).toBe(12_000);
+	expect(recallIndexes()).toEqual(["MEMORY.md", "FEEDBACK.md"]);
+});
+
+test("recall bounds are overridable per environment", () => {
+	process.env.MNEMOSYNE_MEMORY_RECALL_FLOOR = "0.8";
+	process.env.MNEMOSYNE_MEMORY_RECALL_CAP = "120";
+	process.env.MNEMOSYNE_MEMORY_RECALL_BUDGET = "4000";
+	process.env.MNEMOSYNE_MEMORY_RECALL_INDEXES = " MEMORY.md , , RULES.md ";
+
+	expect(recallFloor()).toBe(0.8);
+	expect(recallCap()).toBe(120);
+	expect(recallBudget()).toBe(4_000);
+	expect(recallIndexes()).toEqual(["MEMORY.md", "RULES.md"]);
+});
+
+test("a malformed recall floor falls back to the default", () => {
+	process.env.MNEMOSYNE_MEMORY_RECALL_FLOOR = "not-a-number";
+
+	expect(recallFloor()).toBe(0.95);
+});
+
+test("the bank resolves under the caller's Mnemosyne data directory", () => {
+	process.env.MNEMOSYNE_DATA_DIR = "/tmp/bank";
+
+	expect(bankPath()).toBe("/tmp/bank/mnemosyne.db");
+});
+
+test("the project index source follows the retention namespace", async () => {
+	const directory = await repository("git@github.com:derhub/omp-mnemosyne.git");
+
+	expect(projectIndexSource(directory)).toBe("projects/omp-mnemosyne/MEMORY.md");
+});
+
 test("policy fields are overridable per environment", async () => {
 	const directory = await repository();
 	process.env.MNEMOSYNE_MEMORY_SOURCE = "claude-session";
@@ -96,9 +146,7 @@ test("acknowledgements and slash-commands are not worth a memory round trip", ()
 });
 
 test("malformed numeric overrides fall back to the defaults", () => {
-	process.env.MNEMOSYNE_MEMORY_RECALL_LIMIT = "not-a-number";
 	process.env.MNEMOSYNE_MEMORY_MIN_PROMPT = "";
 
-	expect(recallLimit()).toBe(5);
 	expect(minPromptLength()).toBe(16);
 });

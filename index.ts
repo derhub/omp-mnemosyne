@@ -1,13 +1,8 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { MCPManager, callTool } from "@oh-my-pi/pi-coding-agent/mcp";
-import { isRetainablePrompt, recallLimit, retainEnabled, retentionPolicy } from "./config";
-import {
-	extractInteraction,
-	parseRecallResponse,
-	parseRememberResponse,
-	renderMemoryBlock,
-	type McpTextResult,
-} from "./core";
+import { sessionRecall } from "./bank";
+import { retainEnabled, retentionPolicy } from "./config";
+import { extractInteraction, parseRememberResponse, type McpTextResult } from "./core";
 
 const serverName = "mnemosyne";
 const timeoutMs = 5_000;
@@ -39,6 +34,7 @@ function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export default function mnemosyneMemory(pi: ExtensionAPI): void {
 	const reportedFailures = new Set<Operation>();
 	const retainedTurns = new Set<string>();
+	let recalled = false;
 
 	function reportFailure(operation: Operation): void {
 		if (reportedFailures.has(operation)) return;
@@ -47,7 +43,7 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 	}
 
 	async function callMnemosyne(
-		toolName: "mnemosyne_recall" | "mnemosyne_remember",
+		toolName: "mnemosyne_remember",
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<McpTextResult> {
@@ -60,17 +56,22 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 		return (await callTool(connection, toolName, args, { signal: requestSignal })) as McpTextResult;
 	}
 
-	pi.on("before_agent_start", async event => {
-		const query = event.prompt.trim().slice(0, 4_000);
-		if (!query || !isRetainablePrompt(query)) return;
+	pi.on("session_start", () => {
+		recalled = false;
+	});
+
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (recalled) return;
+		recalled = true;
 
 		try {
-			const result = await callMnemosyne("mnemosyne_recall", { query, limit: recallLimit() });
-			const memoryBlock = renderMemoryBlock(parseRecallResponse(result));
+			const block = await sessionRecall(ctx.cwd);
 			reportedFailures.delete("recall");
-			return memoryBlock ? { systemPrompt: [...event.systemPrompt, memoryBlock] } : undefined;
+			return block
+				? { message: { customType: "mnemosyne-memory", content: block, display: false } }
+				: undefined;
 		} catch (error) {
-			if (!(error instanceof DOMException && error.name === "AbortError")) reportFailure("recall");
+			reportFailure("recall");
 		}
 	});
 

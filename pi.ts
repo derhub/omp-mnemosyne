@@ -1,14 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { isRetainablePrompt, recallLimit, retainEnabled, retentionPolicy, serverEnvironment } from "./config";
-import {
-	extractInteraction,
-	parseRecallResponse,
-	parseRememberResponse,
-	renderMemoryBlock,
-	type McpTextResult,
-} from "./core";
+import { sessionRecall } from "./bank";
+import { retainEnabled, retentionPolicy, serverEnvironment } from "./config";
+import { extractInteraction, parseRememberResponse, type McpTextResult } from "./core";
 
 const timeoutMs = 5_000;
 const serverCommand = "mnemosyne";
@@ -50,6 +45,8 @@ function latestAssistant(messages: readonly unknown[]): unknown {
 export default function mnemosyneMemory(pi: ExtensionAPI): void {
 	const reportedFailures = new Set<Operation>();
 	const retainedTurns = new Set<string>();
+	let recalled = false;
+
 	function reportFailure(operation: Operation): void {
 		if (reportedFailures.has(operation)) return;
 		reportedFailures.add(operation);
@@ -57,7 +54,7 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 	}
 
 	async function callMnemosyne(
-		toolName: "mnemosyne_recall" | "mnemosyne_remember",
+		toolName: "mnemosyne_remember",
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<McpTextResult> {
@@ -79,17 +76,22 @@ export default function mnemosyneMemory(pi: ExtensionAPI): void {
 		}
 	}
 
-	pi.on("before_agent_start", async (event, ctx) => {
-		const query = event.prompt.trim().slice(0, 4_000);
-		if (!query || !isRetainablePrompt(query)) return;
+	pi.on("session_start", () => {
+		recalled = false;
+	});
+
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (recalled) return;
+		recalled = true;
 
 		try {
-			const result = await callMnemosyne("mnemosyne_recall", { query, limit: recallLimit() }, ctx.signal);
-			const memoryBlock = renderMemoryBlock(parseRecallResponse(result));
+			const block = await sessionRecall(ctx.cwd);
 			reportedFailures.delete("recall");
-			return memoryBlock ? { systemPrompt: `${event.systemPrompt}\n\n${memoryBlock}` } : undefined;
+			return block
+				? { message: { customType: "mnemosyne-memory", content: block, display: false } }
+				: undefined;
 		} catch (error) {
-			if (!(error instanceof DOMException && error.name === "AbortError")) reportFailure("recall");
+			reportFailure("recall");
 		}
 	});
 
