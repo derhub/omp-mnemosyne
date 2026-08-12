@@ -78,9 +78,9 @@ function stateDirectory(): string {
 		?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "mnemosyne-memory");
 }
 
-function statePath(host: Host, sessionId: string, turnId: string, directory: string): string {
+function statePath(host: Host, sessionId: string, turnId: string, directory: string, extension = "json"): string {
 	const key = createHash("sha256").update(`${host}\0${sessionId}\0${turnId}`).digest("hex");
-	return join(directory, `${key}.json`);
+	return join(directory, `${key}.${extension}`);
 }
 
 /** Keyed by session alone: a new session brings a new key, so nothing needs resetting. */
@@ -100,9 +100,9 @@ async function claimRecall(host: Host, sessionId: string, directory: string): Pr
 	}
 }
 
-async function loadPending(host: Host, sessionId: string, turnId: string, directory: string): Promise<PendingInteraction | undefined> {
+async function loadPending(path: string): Promise<PendingInteraction | undefined> {
 	try {
-		const value = record(JSON.parse(await readFile(statePath(host, sessionId, turnId, directory), "utf8")));
+		const value = record(JSON.parse(await readFile(path, "utf8")));
 		const prompt = text(value?.prompt);
 		return prompt ? { prompt } : undefined;
 	} catch {
@@ -119,8 +119,37 @@ async function savePending(host: Host, sessionId: string, turnId: string, pendin
 	await rename(temporary, path);
 }
 
-async function clearPending(host: Host, sessionId: string, turnId: string, directory: string): Promise<void> {
-	await rm(statePath(host, sessionId, turnId, directory), { force: true });
+async function claimPending(host: Host, sessionId: string, turnId: string, directory: string): Promise<PendingInteraction | undefined> {
+	const pending = statePath(host, sessionId, turnId, directory);
+	const inFlight = statePath(host, sessionId, turnId, directory, "inflight");
+	try {
+		await rename(pending, inFlight);
+		return loadPending(inFlight);
+	} catch {
+		return undefined;
+	}
+}
+
+async function invalidatePending(host: Host, sessionId: string, turnId: string, directory: string): Promise<void> {
+	try {
+		await rename(
+			statePath(host, sessionId, turnId, directory),
+			statePath(host, sessionId, turnId, directory, "ignored"),
+		);
+	} catch (error) {
+		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+	}
+}
+
+async function restorePending(host: Host, sessionId: string, turnId: string, directory: string): Promise<void> {
+	await rename(
+		statePath(host, sessionId, turnId, directory, "inflight"),
+		statePath(host, sessionId, turnId, directory),
+	);
+}
+
+async function clearPending(host: Host, sessionId: string, turnId: string, directory: string, extension = "json"): Promise<void> {
+	await rm(statePath(host, sessionId, turnId, directory, extension), { force: true });
 }
 
 function stripUserRequest(value: string): string {
@@ -260,6 +289,12 @@ async function handlePrompt(host: Host, input: HookInput, operations: HookOperat
 		} catch (error) {
 			console.error(`Mnemosyne hook: retention unavailable (${error instanceof Error ? error.message : "unknown error"})`);
 		}
+	} else {
+		try {
+			await invalidatePending(host, ids.sessionId, ids.turnId, directory);
+		} catch (error) {
+			console.error(`Mnemosyne hook: pending retention cleanup unavailable (${error instanceof Error ? error.message : "unknown error"})`);
+		}
 	}
 
 	try {
@@ -277,14 +312,21 @@ async function handleRetention(host: Host, input: HookInput, operations: HookOpe
 
 	const ids = hostIds(host, input);
 	if (!ids.sessionId || !ids.turnId) return stopOutput(host);
-	const pending = await loadPending(host, ids.sessionId, ids.turnId, directory);
+	const pending = await claimPending(host, ids.sessionId, ids.turnId, directory);
 	if (!pending) return stopOutput(host);
 
 	const assistant = host === "agy"
 		? (await readAgyTranscript(input)).assistant
 		: text(input.last_assistant_message);
 	const interaction = assistant ? formatInteraction(pending.prompt, assistant) : undefined;
-	if (!interaction) return stopOutput(host);
+	if (!interaction) {
+		try {
+			await restorePending(host, ids.sessionId, ids.turnId, directory);
+		} catch (error) {
+			console.error(`Mnemosyne hook: pending retention restore unavailable (${error instanceof Error ? error.message : "unknown error"})`);
+		}
+		return stopOutput(host);
+	}
 
 	try {
 		await operations.remember(interaction, {
@@ -292,9 +334,20 @@ async function handleRetention(host: Host, input: HookInput, operations: HookOpe
 			[`${host}_session_id`]: ids.sessionId,
 			[`${host}_turn_id`]: ids.turnId,
 		});
-		await clearPending(host, ids.sessionId, ids.turnId, directory);
 	} catch (error) {
+		try {
+			await restorePending(host, ids.sessionId, ids.turnId, directory);
+		} catch (restoreError) {
+			console.error(`Mnemosyne hook: pending retention restore unavailable (${restoreError instanceof Error ? restoreError.message : "unknown error"})`);
+		}
 		console.error(`Mnemosyne hook: retain unavailable (${error instanceof Error ? error.message : "unknown error"})`);
+		return stopOutput(host);
+	}
+
+	try {
+		await clearPending(host, ids.sessionId, ids.turnId, directory, "inflight");
+	} catch (error) {
+		console.error(`Mnemosyne hook: pending retention cleanup unavailable (${error instanceof Error ? error.message : "unknown error"})`);
 	}
 	return stopOutput(host);
 }

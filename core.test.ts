@@ -36,12 +36,23 @@ test("caps each project index entry so the block stays an index", () => {
 	expect(rendered).toContain(`${"x".repeat(268)}\n[truncated]`);
 });
 
-test("stops admitting entries once the block budget is spent", () => {
-	const rules = Array.from({ length: 6 }, (_, index) => `${index}:${"x".repeat(100)}`);
-	const rendered = renderRecallBlock(rules, [], { ...options, budget: 400 });
+test("honours small project index caps", () => {
+	const rendered = renderRecallBlock([], ["z".repeat(400)], { ...options, cap: 1 });
 
-	expect(rendered?.match(/^- \d:/gm)).toHaveLength(3);
-	expect(rendered).toContain("3 further memories withheld by the recall budget.");
+	expect(rendered).toContain("- z");
+	expect(rendered).not.toContain("- zz");
+});
+
+test("bounds the complete recall block", () => {
+	const rendered = renderRecallBlock(
+		Array.from({ length: 6 }, (_, index) => `${index}:${"x".repeat(100)}`),
+		[],
+		{ ...options, budget: 800 },
+	);
+
+	expect(rendered).toBeDefined();
+	expect(rendered!.length).toBeLessThanOrEqual(800);
+	expect(rendered).toContain("further memories withheld by the recall budget.");
 });
 
 test("names the project and its index source when the project holds nothing", () => {
@@ -49,6 +60,17 @@ test("names the project and its index source when the project holds nothing", ()
 
 	expect(rendered).toContain("## Project memory: omp-mnemosyne");
 	expect(rendered).toContain("source: projects/omp-mnemosyne/MEMORY.md");
+});
+
+test("escapes repository metadata in the recall block", () => {
+	const rendered = renderRecallBlock(["standing rule"], [], {
+		...options,
+		project: "repo <instruction>",
+		indexSource: "projects/a&b/MEMORY.md",
+	});
+
+	expect(rendered).toContain("## Project memory: repo &lt;instruction&gt;");
+	expect(rendered).toContain("source: projects/a&amp;b/MEMORY.md");
 });
 
 test("points the agent at recall for everything the block does not carry", () => {

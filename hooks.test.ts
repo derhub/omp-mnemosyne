@@ -279,6 +279,87 @@ test("an acknowledgement still opens the session with standing memory but is not
 	expect(calls.remember).toEqual([]);
 });
 
+test("a skipped Claude turn clears a stale active prompt", async () => {
+	const state = await stateDirectory();
+	const { calls, value } = operations();
+
+	await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "retain this stale request",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "g",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+		last_assistant_message: "new answer",
+	}, value, state);
+
+	expect(calls.remember).toEqual([]);
+});
+
+test("hooks restore pending retention after an MCP failure", async () => {
+	const state = await stateDirectory();
+	const { calls, value } = operations();
+	const remember = value.remember;
+	let failed = true;
+	value.remember = async (content, metadata) => {
+		if (failed) {
+			failed = false;
+			throw new Error("offline");
+		}
+		await remember(content, metadata);
+	};
+
+	await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "retain after a transient failure",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+		last_assistant_message: "completed answer",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+		last_assistant_message: "completed answer",
+	}, value, state);
+
+	expect(calls.remember).toHaveLength(1);
+});
+
+test("hooks restore pending retention after an incomplete Stop", async () => {
+	const state = await stateDirectory();
+	const { calls, value } = operations();
+
+	await handleHook("claude", {
+		hook_event_name: "UserPromptSubmit",
+		session_id: "session-1",
+		prompt: "retain after an incomplete stop",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+	}, value, state);
+	await handleHook("claude", {
+		hook_event_name: "Stop",
+		session_id: "session-1",
+		last_assistant_message: "completed answer",
+	}, value, state);
+
+	expect(calls.remember).toEqual([{
+		content: "User:\nretain after an incomplete stop\n\nAssistant:\ncompleted answer",
+		metadata: { host: "claude", claude_session_id: "session-1", claude_turn_id: "active" },
+	}]);
+});
+
+
 test("a slash-command still opens the session with standing memory", async () => {
 	const state = await stateDirectory();
 	const { calls, value } = operations();
